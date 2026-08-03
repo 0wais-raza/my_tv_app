@@ -26,4 +26,32 @@
 
 ---
 
-## 🛠️ Architecture & Core Components
+## 🎮 TV Remote Navigation Guide
+
+> **Tip:** Designed specifically for standard IR / Bluetooth Android TV remotes.
+
+* **D-Pad Navigation** — Move focus across channel lists and category tabs
+* **OK / Center / Enter** — Select channel or toggle play/pause overlay
+* **CH ▲ / CH ▼** — Instant channel zapping inside full-screen player
+* **Back Button** — Dismiss overlay (Tap twice on Main Screen to exit app)
+
+---
+
+## 📦 Download & Installation
+
+`Step 1: Download APK` ──► `Step 2: Copy to USB` ──► `Step 3: Install on TV Box`
+
+1. Navigate to the **[Releases](../../releases)** section on the right sidebar.
+2. Download the appropriate `.apk` build:
+   * `app-armeabi-v7a-release.apk` *(Recommended for Budget/32-bit TV Boxes)*
+   * `app-release.apk` *(Standard 64-bit devices)*
+3. Transfer the file to a USB flash drive and plug it into your Android TV Box.
+4. Launch your TV's **File Manager**, select the `.apk` file, and click **Install**.
+
+---
+
+<div align="center">
+
+Made with ❤️ for Android TV hardware
+
+</div>
