@@ -1,50 +1,5 @@
 // =============================================================================
 // IPTV PLAYER — single-file Flutter app for budget Android TV boxes
-// (built/tested against devices like the "Wisdom Share Smart Cloud TV" box)
-// =============================================================================
-//
-// REQUIRED SETUP (outside this file — cannot be avoided, Dart needs these):
-//
-// 1) pubspec.yaml — third-party packages used:
-//      dependencies:
-//        flutter:
-//          sdk: flutter
-//        video_player: ^2.9.2
-//        http: ^1.2.0
-//        shared_preferences: ^2.2.2
-//
-// 2) android/app/src/main/AndroidManifest.xml — add the INTERNET permission
-//    (every stream/playlist request silently fails without this):
-//      <uses-permission android:name="android.permission.INTERNET"/>
-//
-//    For Android TV, also declare TV support/banner (optional but recommended):
-//      <uses-feature android:name="android.software.leanback" android:required="false"/>
-//      <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
-//
-// -----------------------------------------------------------------------------
-// HARDWARE KEY HANDLING — quick summary (details are inline near each handler)
-// -----------------------------------------------------------------------------
-// - D-Pad UP/DOWN/LEFT/RIGHT (browsing screens & full-screen player idle nav):
-//   Intentionally NOT intercepted. Every focusable tile is wrapped in a
-//   `Focus` widget; Flutter's `WidgetsApp` already binds arrow keys to
-//   `DirectionalFocusIntent` -> `DirectionalFocusAction`, which moves focus
-//   to the nearest on-screen focusable widget in the pressed direction using
-//   real widget geometry. This is the standard, built-in way Flutter apps
-//   support D-Pad/gamepad/keyboard navigation — no manual grid-tracking code
-//   needed, and it stays correct automatically as layouts change.
-// - D-Pad CENTER / ENTER: handled explicitly per-widget (`LogicalKeyboardKey
-//   .select` / `.enter` / `.numpadEnter` / `.gameButtonA`) to activate
-//   ("tune in") a focused tile, or to toggle the player's control overlay.
-// - KEYCODE_CHANNEL_UP / KEYCODE_CHANNEL_DOWN (Android keycodes 166/167):
-//   Flutter's engine maps these to `LogicalKeyboardKey.channelUp` /
-//   `.channelDown`. Handled only inside the full-screen player to zap to the
-//   next/previous channel instantly.
-// - BACK: handled on two redundant paths for maximum device compatibility —
-//   (a) `PopScope`, which intercepts Android's system back navigation
-//       regardless of whether the OS ever surfaces it as a raw key event,
-//       and (b) a fallback check for `LogicalKeyboardKey.goBack` / `.escape`
-//       inside the player's own key handler, for boxes that deliver BACK as
-//       a plain key event instead.
 // =============================================================================
 
 import 'dart:async';
@@ -58,8 +13,6 @@ import 'package:video_player/video_player.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // TV playback is always landscape; locking orientation avoids an
-  // unnecessary relayout pass on devices that report a rotation sensor.
   SystemChrome.setPreferredOrientations(const [
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
@@ -69,32 +22,28 @@ void main() {
 }
 
 // -----------------------------------------------------------------------------
-// GLOBAL CONSTANTS
+// GLOBAL CONSTANTS[cite: 1]
 // -----------------------------------------------------------------------------
 
-/// Spoofed desktop-Chrome User-Agent. Many IPTV origin servers reject the
-/// default Dart/okhttp user agent with HTTP 400/403 — presenting as a real
-/// browser is the single most effective fix for that class of failure.
 const String kSpoofedUserAgent =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-/// Headers injected into every HLS/HTTP video request.
 const Map<String, String> kStreamHeaders = <String, String>{
   'User-Agent': kSpoofedUserAgent,
   'Referer': 'https://www.google.com/',
 };
 
-/// Default Pakistani channels playlist URL
 const String kDefaultPlaylistUrl =
     'https://iptv-org.github.io/iptv/countries/pk.m3u';
 
-const Duration kStreamInitTimeout = Duration(seconds: 8);
+// Increased timeout for low-bandwidth optimization
+const Duration kStreamInitTimeout = Duration(seconds: 15);
 const Duration kBannerDuration = Duration(seconds: 3);
 const Duration kControlsAutoHide = Duration(seconds: 5);
 
 // -----------------------------------------------------------------------------
-// MODEL
+// MODEL[cite: 1]
 // -----------------------------------------------------------------------------
 
 @immutable
@@ -113,17 +62,12 @@ class Channel {
 }
 
 // -----------------------------------------------------------------------------
-// M3U PARSER — lightweight, single-pass, zero external dependencies
+// M3U PARSER[cite: 1]
 // -----------------------------------------------------------------------------
 
 class M3uParser {
   M3uParser._();
 
-  /// Parses raw M3U/M3U8 text into a flat list of [Channel]s.
-  /// Only reads `#EXTINF` metadata + the following URL line; every other
-  /// directive (`#EXTM3U`, `#EXTGRP`, `#EXTVLCOPT`, comments, ...) is
-  /// skipped. This keeps parsing O(n) over the raw text with no regex work
-  /// outside of attribute extraction on `#EXTINF` lines themselves.
   static List<Channel> parse(String raw) {
     final List<Channel> result = <Channel>[];
     if (raw.trim().isEmpty) return result;
@@ -151,9 +95,8 @@ class M3uParser {
         pendingLogo = _extractAttribute(attrPart, 'tvg-logo') ?? '';
         hasPending = true;
       } else if (line.startsWith('#')) {
-        continue; // ignore other directives
+        continue;
       } else {
-        // Non-comment, non-empty line following an #EXTINF is the stream URL.
         if (hasPending) {
           result.add(Channel(
             name: pendingName.isEmpty ? 'Unnamed Channel' : pendingName,
@@ -183,7 +126,7 @@ class M3uParser {
 }
 
 // -----------------------------------------------------------------------------
-// NETWORK — fetch the playlist (Cross-Platform HTTP client for Web & Android)
+// NETWORK[cite: 1]
 // -----------------------------------------------------------------------------
 
 class PlaylistFetcher {
@@ -194,27 +137,24 @@ class PlaylistFetcher {
     if (uri == null || !uri.hasScheme) {
       throw const FormatException('That does not look like a valid URL.');
     }
-
     try {
       final http.Response response = await http
           .get(uri, headers: kStreamHeaders)
           .timeout(kStreamInitTimeout);
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(
-            'Playlist server returned HTTP ${response.statusCode}.');
+        throw Exception('Server HTTP ${response.statusCode}.');
       }
-
       return response.body;
     } catch (e) {
       if (e is FormatException) rethrow;
-      throw Exception('Failed to load playlist: ${e.toString()}');
+      throw Exception('Failed to load: ${e.toString()}');
     }
   }
 }
 
 // -----------------------------------------------------------------------------
-// APP ROOT
+// APP ROOT[cite: 1]
 // -----------------------------------------------------------------------------
 
 class IptvApp extends StatelessWidget {
@@ -238,13 +178,9 @@ class IptvApp extends StatelessWidget {
 }
 
 // -----------------------------------------------------------------------------
-// REUSABLE D-PAD FOCUSABLE WRAPPER
+// REUSABLE D-PAD FOCUSABLE WRAPPER[cite: 1]
 // -----------------------------------------------------------------------------
 
-/// Wraps any widget with TV-remote focus handling: visual focus state via
-/// [builder], SELECT/ENTER activation via [onSelect], and auto-scroll into
-/// view when placed inside a scrollable list. Arrow keys are deliberately
-/// left unhandled here — see the file header comment for why.
 class TvFocusable extends StatefulWidget {
   final Widget Function(BuildContext context, bool hasFocus) builder;
   final VoidCallback onSelect;
@@ -289,8 +225,6 @@ class _TvFocusableState extends State<TvFocusable> {
       widget.onSelect();
       return KeyEventResult.handled;
     }
-    // Returning `ignored` lets arrow keys bubble up to Flutter's built-in
-    // directional focus traversal (see file header comment).
     return KeyEventResult.ignored;
   }
 
@@ -306,7 +240,7 @@ class _TvFocusableState extends State<TvFocusable> {
 }
 
 // -----------------------------------------------------------------------------
-// HOME SCREEN — playlist load, category filter, channel browser, settings
+// HOME SCREEN
 // -----------------------------------------------------------------------------
 
 enum LoadState { idle, loading, loaded, error }
@@ -326,9 +260,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String _errorMessage = '';
 
   List<Channel> _allChannels = const <Channel>[];
-  List<String> _categories = const <String>[];
+  List<String> _baseCategories = const <String>[];
   String _selectedCategory = 'All';
-  final Set<String> _favoriteUrls = <String>{}; // in-memory favorites store
+  
+  final Set<String> _favoriteUrls = <String>{}; 
+  final Set<String> _deadUrls = <String>{}; // Dynamic unavailable tracking
+
+  DateTime? _lastBackPressTime; // Double-tap exit logic
 
   @override
   void initState() {
@@ -342,11 +280,8 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  /// Checks local SharedPreferences. If empty, saves default Pakistan URL and auto-loads.
   Future<void> _checkFirstRunAndLoad() async {
-    setState(() {
-      _loadState = LoadState.loading;
-    });
+    setState(() => _loadState = LoadState.loading);
     try {
       final SharedPreferences prefs = await SharedPreferences.getInstance();
       String? savedUrl = prefs.getString('saved_m3u_url');
@@ -369,15 +304,15 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _loadState = LoadState.loading;
       _errorMessage = '';
+      _deadUrls.clear(); // Reset dead URLs on new load
     });
     try {
       final String raw = await PlaylistFetcher.fetch(urlToFetch);
       final List<Channel> channels = M3uParser.parse(raw);
       if (channels.isEmpty) {
-        throw const FormatException('No channels were found in that playlist.');
+        throw const FormatException('No channels found.');
       }
 
-      // Persist successfully loaded URL locally
       final SharedPreferences prefs = await SharedPreferences.getInstance();
       await prefs.setString('saved_m3u_url', urlToFetch);
 
@@ -389,7 +324,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         setState(() {
           _allChannels = channels;
-          _categories = <String>['All', 'Favorites', ...sortedCategories];
+          _baseCategories = sortedCategories;
           _selectedCategory = 'All';
           _loadState = LoadState.loaded;
         });
@@ -404,16 +339,27 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  List<String> get _dynamicCategories {
+    final List<String> cats = ['All'];
+    if (_favoriteUrls.isNotEmpty) cats.add('Favorites');
+    if (_deadUrls.isNotEmpty) cats.add('Unavailable');
+    cats.addAll(_baseCategories);
+    return cats;
+  }
+
   List<Channel> get _visibleChannels {
-    if (_selectedCategory == 'All') return _allChannels;
-    if (_selectedCategory == 'Favorites') {
-      return _allChannels
-          .where((Channel c) => _favoriteUrls.contains(c.url))
-          .toList(growable: false);
+    if (_selectedCategory == 'Unavailable') {
+      return _allChannels.where((c) => _deadUrls.contains(c.url)).toList();
     }
-    return _allChannels
-        .where((Channel c) => c.group == _selectedCategory)
-        .toList(growable: false);
+    
+    // Filter dead URLs from all other lists
+    final available = _allChannels.where((c) => !_deadUrls.contains(c.url));
+    
+    if (_selectedCategory == 'All') return available.toList();
+    if (_selectedCategory == 'Favorites') {
+      return available.where((c) => _favoriteUrls.contains(c.url)).toList();
+    }
+    return available.where((c) => c.group == _selectedCategory).toList();
   }
 
   void _toggleFavorite(Channel channel) {
@@ -422,6 +368,18 @@ class _HomeScreenState extends State<HomeScreen> {
         _favoriteUrls.remove(channel.url);
       } else {
         _favoriteUrls.add(channel.url);
+      }
+    });
+  }
+
+  void _markChannelStatus(String url, bool isDead) {
+    setState(() {
+      if (isDead) {
+        _deadUrls.add(url);
+        // Move selection if current category empties out
+        if (_visibleChannels.isEmpty) _selectedCategory = 'All';
+      } else {
+        _deadUrls.remove(url);
       }
     });
   }
@@ -436,124 +394,9 @@ class _HomeScreenState extends State<HomeScreen> {
           initialIndex: startIndex < 0 ? 0 : startIndex,
           favoriteUrls: _favoriteUrls,
           onToggleFavorite: _toggleFavorite,
+          onChannelStatusChange: _markChannelStatus,
         ),
       ),
-    );
-  }
-
-  void _openSettingsDialog() {
-    final TextEditingController settingsUrlController =
-        TextEditingController(text: _urlController.text);
-
-    showDialog<void>(
-      context: context,
-      builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF15151C),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          title: const Row(
-            children: <Widget>[
-              Icon(Icons.settings, color: Color(0xFF00C2A8)),
-              SizedBox(width: 10),
-              Text('Playlist Settings', style: TextStyle(color: Colors.white)),
-            ],
-          ),
-          content: SizedBox(
-            width: 500,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                const Text(
-                  'M3U Playlist URL:',
-                  style: TextStyle(color: Colors.white70, fontSize: 14),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: settingsUrlController,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: InputDecoration(
-                    filled: true,
-                    fillColor: const Color(0xFF0A0A0F),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: const BorderSide(color: Colors.white24),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: const BorderSide(color: Color(0xFF00C2A8)),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TvFocusable(
-                  onSelect: () {
-                    settingsUrlController.text = kDefaultPlaylistUrl;
-                  },
-                  builder: (context, hasFocus) => Container(
-                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                    decoration: BoxDecoration(
-                      color: hasFocus ? Colors.amber : const Color(0xFF23232B),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                          color: hasFocus ? Colors.white : Colors.transparent, width: 1.5),
-                    ),
-                    child: Text(
-                      'Reset to Pakistan Default Playlist',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: hasFocus ? Colors.black : Colors.amber,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: <Widget>[
-            TvFocusable(
-              onSelect: () => Navigator.of(dialogContext).pop(),
-              builder: (context, hasFocus) => Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                decoration: BoxDecoration(
-                  color: hasFocus ? Colors.white24 : Colors.transparent,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: const Text('CANCEL', style: TextStyle(color: Colors.white70)),
-              ),
-            ),
-            TvFocusable(
-              onSelect: () {
-                final String newUrl = settingsUrlController.text.trim();
-                if (newUrl.isNotEmpty) {
-                  _urlController.text = newUrl;
-                  Navigator.of(dialogContext).pop();
-                  _loadPlaylist(targetUrl: newUrl);
-                }
-              },
-              builder: (context, hasFocus) => Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                decoration: BoxDecoration(
-                  color: hasFocus ? const Color(0xFF00C2A8) : const Color(0xFF1E2A2E),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                      color: hasFocus ? Colors.white : Colors.transparent, width: 1.5),
-                ),
-                child: Text(
-                  'SAVE & LOAD',
-                  style: TextStyle(
-                    color: hasFocus ? Colors.black : Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        );
-      },
     );
   }
 
@@ -562,19 +405,39 @@ class _HomeScreenState extends State<HomeScreen> {
     Widget body;
     switch (_loadState) {
       case LoadState.idle:
-        body = _buildSetupView();
+      case LoadState.error:
+        body = _buildSetupView(errorText: _errorMessage);
         break;
       case LoadState.loading:
         body = _buildLoadingView();
-        break;
-      case LoadState.error:
-        body = _buildSetupView(errorText: _errorMessage);
         break;
       case LoadState.loaded:
         body = _buildBrowserView();
         break;
     }
-    return Scaffold(body: SafeArea(child: body));
+
+    // Double-Back to Quit logic
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        final now = DateTime.now();
+        if (_lastBackPressTime == null || 
+            now.difference(_lastBackPressTime!) > const Duration(seconds: 2)) {
+          _lastBackPressTime = now;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Press BACK again to exit app'),
+              duration: Duration(seconds: 2),
+              backgroundColor: Color(0xFF00C2A8),
+            )
+          );
+        } else {
+          SystemNavigator.pop();
+        }
+      },
+      child: Scaffold(body: SafeArea(child: body)),
+    );
   }
 
   Widget _buildSetupView({String? errorText}) {
@@ -606,60 +469,27 @@ class _HomeScreenState extends State<HomeScreen> {
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                 ),
               ),
-              if (errorText != null) ...<Widget>[
+              if (errorText != null && errorText.isNotEmpty) ...<Widget>[
                 const SizedBox(height: 12),
-                Text(errorText,
-                    style: const TextStyle(color: Colors.redAccent), textAlign: TextAlign.center),
+                Text(errorText, style: const TextStyle(color: Colors.redAccent), textAlign: TextAlign.center),
               ],
               const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: TvFocusable(
-                      autofocus: true,
-                      onSelect: () => _loadPlaylist(),
-                      builder: (context, hasFocus) => Container(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        decoration: BoxDecoration(
-                          color: hasFocus ? const Color(0xFF00C2A8) : const Color(0xFF1E2A2E),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: hasFocus ? Colors.white : Colors.transparent, width: 2),
-                        ),
-                        child: Text(
-                          'LOAD PLAYLIST',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: hasFocus ? Colors.black : Colors.white,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 1.1,
-                          ),
-                        ),
-                      ),
-                    ),
+              TvFocusable(
+                autofocus: true,
+                onSelect: () => _loadPlaylist(),
+                builder: (context, hasFocus) => Container(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  decoration: BoxDecoration(
+                    color: hasFocus ? const Color(0xFF00C2A8) : const Color(0xFF1E2A2E),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: hasFocus ? Colors.white : Colors.transparent, width: 2),
                   ),
-                  const SizedBox(width: 10),
-                  TvFocusable(
-                    onSelect: () {
-                      _urlController.text = kDefaultPlaylistUrl;
-                      _loadPlaylist();
-                    },
-                    builder: (context, hasFocus) => Container(
-                      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                      decoration: BoxDecoration(
-                        color: hasFocus ? Colors.amber : const Color(0xFF23232B),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: hasFocus ? Colors.white : Colors.transparent, width: 2),
-                      ),
-                      child: Text(
-                        'RESET DEFAULT',
-                        style: TextStyle(
-                          color: hasFocus ? Colors.black : Colors.amber,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
+                  child: Text(
+                    'LOAD PLAYLIST',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: hasFocus ? Colors.black : Colors.white, fontWeight: FontWeight.bold),
                   ),
-                ],
+                ),
               ),
             ],
           ),
@@ -675,7 +505,7 @@ class _HomeScreenState extends State<HomeScreen> {
         children: <Widget>[
           CircularProgressIndicator(color: Color(0xFF00C2A8)),
           SizedBox(height: 16),
-          Text('Loading Pakistani channels…', style: TextStyle(color: Colors.white70)),
+          Text('Loading channels…', style: TextStyle(color: Colors.white70)),
         ],
       ),
     );
@@ -683,6 +513,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildBrowserView() {
     final List<Channel> channels = _visibleChannels;
+    final categories = _dynamicCategories;
+    
     return Column(
       children: <Widget>[
         Padding(
@@ -691,32 +523,7 @@ class _HomeScreenState extends State<HomeScreen> {
             children: <Widget>[
               const Icon(Icons.live_tv, color: Color(0xFF00C2A8), size: 20),
               const SizedBox(width: 8),
-              Text('${_allChannels.length} channels',
-                  style: const TextStyle(color: Colors.white54, fontSize: 13)),
-              const Spacer(),
-              TvFocusable(
-                onSelect: _openSettingsDialog,
-                builder: (context, hasFocus) => Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: hasFocus ? const Color(0xFF00C2A8) : const Color(0xFF15151C),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: hasFocus ? Colors.white : Colors.white24, width: 1.5),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.settings,
-                          size: 14, color: hasFocus ? Colors.black : Colors.white70),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Settings & Playlist',
-                        style: TextStyle(
-                            color: hasFocus ? Colors.black : Colors.white70, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+              Text('${_allChannels.length} channels total', style: const TextStyle(color: Colors.white54, fontSize: 13)),
             ],
           ),
         ),
@@ -728,20 +535,17 @@ class _HomeScreenState extends State<HomeScreen> {
                 width: 220,
                 child: ListView.builder(
                   padding: const EdgeInsets.symmetric(vertical: 12),
-                  itemCount: _categories.length,
-                  itemBuilder: (context, index) => _categoryTile(_categories[index]),
+                  itemCount: categories.length,
+                  itemBuilder: (context, index) => _categoryTile(categories[index]),
                 ),
               ),
               const VerticalDivider(width: 1, color: Color(0xFF23232B)),
               Expanded(
                 child: channels.isEmpty
-                    ? const Center(
-                        child: Text('No channels in this category',
-                            style: TextStyle(color: Colors.white54)),
-                      )
+                    ? const Center(child: Text('No channels here', style: TextStyle(color: Colors.white54)))
                     : ListView.builder(
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        itemExtent: 66,
+                        itemExtent: 70,
                         itemCount: channels.length,
                         itemBuilder: (context, index) {
                           final Channel channel = channels[index];
@@ -764,25 +568,25 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _categoryTile(String category) {
     final bool selected = category == _selectedCategory;
+    final bool isDeadCat = category == 'Unavailable';
+    
     return TvFocusable(
       onSelect: () => setState(() => _selectedCategory = category),
       builder: (context, hasFocus) {
-        return AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        return Container(
+          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           decoration: BoxDecoration(
             color: hasFocus
-                ? const Color(0xFF00C2A8)
+                ? (isDeadCat ? Colors.redAccent : const Color(0xFF00C2A8))
                 : (selected ? const Color(0xFF1E2A2E) : Colors.transparent),
             borderRadius: BorderRadius.circular(6),
             border: Border.all(color: hasFocus ? Colors.white : Colors.transparent, width: 2),
           ),
           child: Text(
             category,
-            overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              color: hasFocus ? Colors.black : Colors.white70,
+              color: hasFocus ? Colors.black : (isDeadCat ? Colors.redAccent : Colors.white70),
               fontWeight: selected ? FontWeight.bold : FontWeight.normal,
               fontSize: 16,
             ),
@@ -794,10 +598,10 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // -----------------------------------------------------------------------------
-// CHANNEL TILE — standalone focusable item with favorite shortcut
+// CHANNEL TILE — Fixed with distinct D-Pad Focus targets for Star and Tune
 // -----------------------------------------------------------------------------
 
-class ChannelTile extends StatefulWidget {
+class ChannelTile extends StatelessWidget {
   final Channel channel;
   final bool isFavorite;
   final VoidCallback onTune;
@@ -814,117 +618,87 @@ class ChannelTile extends StatefulWidget {
   });
 
   @override
-  State<ChannelTile> createState() => _ChannelTileState();
-}
-
-class _ChannelTileState extends State<ChannelTile> {
-  bool _hasFocus = false;
-
-  void _onFocusChange(bool focused) {
-    setState(() => _hasFocus = focused);
-    if (focused) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          Scrollable.ensureVisible(
-            context,
-            alignment: 0.5,
-            duration: const Duration(milliseconds: 150),
-          );
-        }
-      });
-    }
-  }
-
-  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-    final LogicalKeyboardKey key = event.logicalKey;
-
-    if (key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.gameButtonA) {
-      widget.onTune();
-      return KeyEventResult.handled;
-    }
-
-    if (key == LogicalKeyboardKey.contextMenu || key == LogicalKeyboardKey.keyM) {
-      widget.onToggleFavorite();
-      return KeyEventResult.handled;
-    }
-
-    return KeyEventResult.ignored;
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return Focus(
-      autofocus: widget.autofocus,
-      onFocusChange: _onFocusChange,
-      onKeyEvent: _onKey,
-      child: Container(
-        height: 60,
-        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        decoration: BoxDecoration(
-          color: _hasFocus ? const Color(0xFF00C2A8) : const Color(0xFF15151C),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: _hasFocus ? Colors.white : Colors.transparent, width: 2),
-        ),
-        child: Row(
-          children: <Widget>[
-            Icon(
-              widget.isFavorite ? Icons.star : Icons.star_border,
-              size: 18,
-              color: widget.isFavorite
-                  ? (_hasFocus ? Colors.black : Colors.amber)
-                  : (_hasFocus ? Colors.black45 : Colors.white38),
-            ),
-            const SizedBox(width: 10),
-            
-            // LOGO DISPLAY ADDED HERE
-            if (widget.channel.logoUrl.isNotEmpty) ...[
-              Image.network(
-                widget.channel.logoUrl,
-                width: 32,
-                height: 32,
-                errorBuilder: (context, error, stackTrace) =>
-                    Icon(Icons.live_tv, size: 24, color: _hasFocus ? Colors.black54 : Colors.white54),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Row(
+        children: [
+          // Favorite Star Focus Area
+          TvFocusable(
+            onSelect: onToggleFavorite,
+            builder: (context, hasFocus) => Container(
+              height: 60,
+              width: 50,
+              decoration: BoxDecoration(
+                color: hasFocus ? Colors.amber : const Color(0xFF15151C),
+                borderRadius: const BorderRadius.only(topLeft: Radius.circular(6), bottomLeft: Radius.circular(6)),
+                border: Border.all(color: hasFocus ? Colors.white : Colors.transparent, width: 2),
               ),
-              const SizedBox(width: 10),
-            ] else ...[
-              Icon(Icons.live_tv, size: 24, color: _hasFocus ? Colors.black54 : Colors.white54),
-              const SizedBox(width: 10),
-            ],
-
-            Expanded(
-              child: Text(
-                widget.channel.name,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: _hasFocus ? Colors.black : Colors.white,
-                  fontSize: 15,
-                  fontWeight: _hasFocus ? FontWeight.bold : FontWeight.normal,
+              child: Icon(
+                isFavorite ? Icons.star : Icons.star_border,
+                color: hasFocus ? Colors.black : (isFavorite ? Colors.amber : Colors.white38),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          // Channel Title Focus Area
+          Expanded(
+            child: TvFocusable(
+              autofocus: autofocus,
+              onSelect: onTune,
+              builder: (context, hasFocus) => Container(
+                height: 60,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                decoration: BoxDecoration(
+                  color: hasFocus ? const Color(0xFF00C2A8) : const Color(0xFF15151C),
+                  borderRadius: const BorderRadius.only(topRight: Radius.circular(6), bottomRight: Radius.circular(6)),
+                  border: Border.all(color: hasFocus ? Colors.white : Colors.transparent, width: 2),
+                ),
+                child: Row(
+                  children: [
+                    if (channel.logoUrl.isNotEmpty) ...[
+                      Image.network(
+                        channel.logoUrl,
+                        width: 32,
+                        height: 32,
+                        errorBuilder: (context, error, stackTrace) =>
+                            Icon(Icons.live_tv, size: 24, color: hasFocus ? Colors.black54 : Colors.white54),
+                      ),
+                      const SizedBox(width: 10),
+                    ],
+                    Expanded(
+                      child: Text(
+                        channel.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: hasFocus ? Colors.black : Colors.white,
+                          fontSize: 15,
+                          fontWeight: hasFocus ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      channel.group,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: hasFocus ? Colors.black54 : Colors.white38,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-            const SizedBox(width: 8),
-            Text(
-              widget.channel.group,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: _hasFocus ? Colors.black54 : Colors.white38,
-                fontSize: 11,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 }
 
 // -----------------------------------------------------------------------------
-// PLAYER SCREEN — full-screen playback + anti-failure engine + remote control
+// PLAYER SCREEN
 // -----------------------------------------------------------------------------
 
 enum _PlayerState { initializing, playing, error }
@@ -934,6 +708,7 @@ class PlayerScreen extends StatefulWidget {
   final int initialIndex;
   final Set<String> favoriteUrls;
   final ValueChanged<Channel> onToggleFavorite;
+  final Function(String, bool) onChannelStatusChange;
 
   const PlayerScreen({
     super.key,
@@ -941,6 +716,7 @@ class PlayerScreen extends StatefulWidget {
     required this.initialIndex,
     required this.favoriteUrls,
     required this.onToggleFavorite,
+    required this.onChannelStatusChange,
   });
 
   @override
@@ -952,12 +728,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
   VideoPlayerController? _controller;
   _PlayerState _state = _PlayerState.initializing;
   String _errorText = '';
+  
   bool _showControls = true;
   bool _showBanner = true;
 
   Timer? _controlsHideTimer;
   Timer? _bannerTimer;
-
+  Timer? _retryTimer;
+  int _retryCountdown = 10;
   int _loadToken = 0;
 
   final FocusNode _rootFocusNode = FocusNode(debugLabel: 'PlayerRoot');
@@ -977,6 +755,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void dispose() {
     _controlsHideTimer?.cancel();
     _bannerTimer?.cancel();
+    _retryTimer?.cancel();
     _controller?.dispose();
     _rootFocusNode.dispose();
     super.dispose();
@@ -986,6 +765,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final int token = ++_loadToken;
     final VideoPlayerController? oldController = _controller;
     _controller = null;
+    _retryTimer?.cancel();
 
     setState(() {
       _state = _PlayerState.initializing;
@@ -1017,6 +797,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       await newController.setVolume(1.0);
       await newController.play();
 
+      // Channel is working, recover it
+      widget.onChannelStatusChange(channel.url, false);
+
       setState(() {
         _controller = newController;
         _state = _PlayerState.playing;
@@ -1024,33 +807,38 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
       _restartBannerTimer();
       _restartControlsTimer();
-    } on TimeoutException {
-      if (token != _loadToken) return;
-      await newController?.dispose();
-      await oldController?.dispose();
-      _handleStreamError('Connection timed out while loading the stream.');
     } catch (e) {
       if (token != _loadToken) return;
       await newController?.dispose();
       await oldController?.dispose();
-      _handleStreamError(_describeError(e));
+      _handleStreamError('Stream failed: ${e.toString().split(':').first}');
     }
-  }
-
-  String _describeError(Object e) {
-    final String msg = e.toString();
-    if (msg.contains('400')) return 'Stream rejected the request (HTTP 400).';
-    if (msg.contains('403')) return 'Access denied by server (HTTP 403).';
-    if (msg.contains('404')) return 'Stream not found (HTTP 404).';
-    if (msg.contains('500')) return 'Server error (HTTP 500).';
-    return 'Stream Unavailable.';
   }
 
   void _handleStreamError(String message) {
     if (!mounted) return;
+    
+    // Mark channel as dead
+    widget.onChannelStatusChange(_currentChannel.url, true);
+
     setState(() {
       _state = _PlayerState.error;
       _errorText = message;
+      _retryCountdown = 8; // Auto-retry every 8 seconds
+    });
+
+    _retryTimer?.cancel();
+    _retryTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_retryCountdown > 1) {
+        setState(() => _retryCountdown--);
+      } else {
+        timer.cancel();
+        _retry();
+      }
     });
   }
 
@@ -1098,48 +886,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _handleBack() {
-    if (_state == _PlayerState.error || (!_showControls && !_showBanner)) {
-      Navigator.of(context).maybePop();
-      return;
-    }
-    setState(() {
-      _showControls = false;
-      _showBanner = false;
-    });
-    _controlsHideTimer?.cancel();
-    _bannerTimer?.cancel();
+    Navigator.of(context).maybePop();
   }
 
   KeyEventResult _handleKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final LogicalKeyboardKey key = event.logicalKey;
 
-    // KEYCODE_CHANNEL_UP / KEYCODE_CHANNEL_DOWN (Remote CH+ / CH- buttons)
-    if (key == LogicalKeyboardKey.channelUp) {
+    if (key == LogicalKeyboardKey.channelUp || key == LogicalKeyboardKey.arrowUp) {
       _switchChannel(1);
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.channelDown) {
+    if (key == LogicalKeyboardKey.channelDown || key == LogicalKeyboardKey.arrowDown) {
       _switchChannel(-1);
       return KeyEventResult.handled;
     }
 
-    // D-Pad UP/DOWN zapping
-    if (key == LogicalKeyboardKey.arrowUp) {
-      _switchChannel(1);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowDown) {
-      _switchChannel(-1);
-      return KeyEventResult.handled;
-    }
-
-    // D-Pad CENTER / ENTER
-    if (key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.gameButtonA) {
+    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
       if (_state == _PlayerState.error) {
+        _retryTimer?.cancel();
         _retry();
       } else if (_showControls) {
         _togglePlayPause();
@@ -1149,15 +914,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return KeyEventResult.handled;
     }
 
-    // Favorite toggle
     if (key == LogicalKeyboardKey.contextMenu || key == LogicalKeyboardKey.keyM) {
       widget.onToggleFavorite(_currentChannel);
       setState(() {});
       return KeyEventResult.handled;
     }
 
-    // BACK BUTTON
     if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
+      if (_showControls || _showBanner) {
+        setState(() {
+          _showControls = false;
+          _showBanner = false;
+        });
+        _controlsHideTimer?.cancel();
+        _bannerTimer?.cancel();
+        return KeyEventResult.handled;
+      }
       _handleBack();
       return KeyEventResult.handled;
     }
@@ -1167,36 +939,33 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: _state == _PlayerState.error || (!_showControls && !_showBanner),
-      onPopInvokedWithResult: (bool didPop, Object? result) {
-        if (didPop) return;
-        _handleBack();
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: Focus(
-          focusNode: _rootFocusNode,
-          autofocus: true,
-          onKeyEvent: _handleKey,
-          child: GestureDetector(
-            onTap: () {
-              if (_state == _PlayerState.error) return;
-              if (_showControls) {
-                _togglePlayPause();
-              } else {
-                _restartControlsTimer();
-              }
-            },
-            child: Stack(
-              fit: StackFit.expand,
-              children: <Widget>[
-                _buildVideoLayer(),
-                if (_showBanner) _buildChannelBanner(),
-                if (_showControls) _buildControlsOverlay(),
-                if (_state == _PlayerState.error) _buildErrorOverlay(),
-              ],
-            ),
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Focus(
+        focusNode: _rootFocusNode,
+        autofocus: true,
+        onKeyEvent: _handleKey,
+        child: GestureDetector(
+          onTap: () {
+            if (_state == _PlayerState.error) {
+              _retryTimer?.cancel();
+              _retry();
+              return;
+            }
+            if (_showControls) {
+              _togglePlayPause();
+            } else {
+              _restartControlsTimer();
+            }
+          },
+          child: Stack(
+            fit: StackFit.expand,
+            children: <Widget>[
+              _buildVideoLayer(),
+              if (_showBanner) _buildChannelBanner(),
+              if (_showControls) _buildControlsOverlay(),
+              if (_state == _PlayerState.error) _buildErrorOverlay(),
+            ],
           ),
         ),
       ),
@@ -1243,8 +1012,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
               ),
               const SizedBox(width: 6),
-              const Text('LIVE',
-                  style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+              const Text('LIVE', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
               const SizedBox(width: 14),
               Flexible(
                 child: Text(
@@ -1254,8 +1022,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
               ),
               const SizedBox(width: 10),
-              Text('· ${_currentChannel.group}',
-                  style: const TextStyle(color: Colors.white70, fontSize: 13)),
+              Text('· ${_currentChannel.group}', style: const TextStyle(color: Colors.white70, fontSize: 13)),
               if (isFav) ...<Widget>[
                 const SizedBox(width: 10),
                 const Icon(Icons.star, color: Colors.amber, size: 16),
@@ -1280,13 +1047,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
           gradient: LinearGradient(
             begin: Alignment.bottomCenter,
             end: Alignment.topCenter,
-            colors: <Color>[Colors.black.withValues(alpha: 0.75), Colors.transparent],
+            colors: <Color>[Colors.black.withValues(alpha: 0.85), Colors.transparent],
           ),
         ),
         child: Row(
           children: <Widget>[
-            Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
-                color: Colors.white, size: 32),
+            Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled, color: Colors.white, size: 32),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -1295,8 +1061,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 style: const TextStyle(color: Colors.white, fontSize: 15),
               ),
             ),
-            const Text('CH ▲▼ zap · OK play/pause · BACK exit',
-                style: TextStyle(color: Colors.white54, fontSize: 12)),
+            const Text('CH ▲▼ zap · OK play/pause · BACK exit', style: TextStyle(color: Colors.white54, fontSize: 12)),
           ],
         ),
       ),
@@ -1313,14 +1078,33 @@ class _PlayerScreenState extends State<PlayerScreen> {
             const Icon(Icons.wifi_tethering_error_rounded, color: Colors.redAccent, size: 48),
             const SizedBox(height: 12),
             const Text(
-              'Stream Unavailable - Retrying...',
-              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              'Stream Unavailable',
+              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 6),
-            Text(_errorText, style: const TextStyle(color: Colors.white54, fontSize: 13)),
+            const SizedBox(height: 8),
+            Text(_errorText, style: const TextStyle(color: Colors.white54, fontSize: 14)),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(color: Color(0xFF00C2A8), strokeWidth: 2),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  'Auto-reconnecting in $_retryCountdown seconds...',
+                  style: const TextStyle(color: Colors.white70, fontSize: 15),
+                ),
+              ],
+            ),
             const SizedBox(height: 20),
             GestureDetector(
-              onTap: _retry,
+              onTap: () {
+                _retryTimer?.cancel();
+                _retry();
+              },
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
                 decoration: BoxDecoration(
@@ -1329,7 +1113,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   border: Border.all(color: Colors.white, width: 2),
                 ),
                 child: const Text(
-                  'RETRY  (press OK)',
+                  'RETRY NOW  (press OK)',
                   style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
                 ),
               ),
