@@ -899,7 +899,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         return;
       }
 
-      await oldController?.removeListener(_videoListener);
+      oldController?.removeListener(_videoListener);
       await oldController?.dispose();
 
       if (!mounted) {
