@@ -1,32 +1,29 @@
-# 📺 Custom Android TV IPTV Player
+<div align="center">
 
-A lightweight, high-performance **Flutter IPTV Player** specifically built and optimized for low-spec Android TV boxes, Smart TVs, and Leanback devices (such as Wisdom Share, Allwinner, and Amlogic hardware).
+# 📺 Leanback IPTV Player for Android TV
 
----
+![Flutter](https://img.shields.io/badge/Flutter-02569B?style=for-the-badge&logo=flutter&logoColor=white)
+![Dart](https://img.shields.io/badge/Dart-0175C2?style=for-the-badge&logo=dart&logoColor=white)
+![Android TV](https://img.shields.io/badge/Android_TV-3DDC84?style=for-the-badge&logo=android&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
-## ✨ Features
-
-- ⚡ **Low-Bandwidth Optimized:** Smooth stream initialization and smart buffer handling designed for lower-speed networks.
-- 🔄 **Smart Channel Recovery:** Automatically categorizes failing/offline streams into an **"Unavailable"** tab and auto-restores them once back online.
-- 🎮 **Full D-Pad Remote Navigation:** Native arrow-key traversal, instant channel zapping (CH ▲/▼), and TV-friendly interface.
-- 🔁 **Dynamic Auto-Retry Overlay:** Professional error handling with dynamic countdown reconnect loops—no manual button mashing required.
-- ⭐ **Enhanced Favorites UI:** Dedicated TV-safe favorite toggling and instant category filtering.
-- 🛡️ **Double-Back Exit Protection:** Prevents accidental app closes with double-tap back verification on the home screen.
-- 🌐 **Anti-Block Stream Engine:** Injected User-Agent headers to bypass standard stream blocks (HTTP 400/403).
+*A high-performance, lightweight IPTV playback solution engineered for budget Android TV boxes, Smart TVs, and Leanback devices.*
 
 ---
 
-## 📦 How to Install
+</div>
 
-1. Go to the **[Releases](../../releases)** section on the right side of this repository.
-2. Download the latest `app-armeabi-v7a-release.apk` (for budget TV boxes) or `app-release.apk`.
-3. Transfer the file to a USB flash drive and insert it into your TV Box.
-4. Open your TV Box File Manager, select the `.apk` file, and install!
+## 📌 Features Overview
+
+| Feature | Visual Icon | Details |
+| :--- | :---: | :--- |
+| **Low-Bandwidth Optimized** | ⚡ | Optimized buffers and network headers engineered for lower-speed connections. |
+| **Smart Channel Auto-Recovery** | 🔄 | Failing streams automatically move to an **Unavailable** tab and restore when back online. |
+| **Native D-Pad Remote Support** | 🎮 | Native arrow-key traversal, instant channel zapping (CH ▲/▼), and quick selection. |
+| **Dynamic Auto-Retry Engine** | 🔁 | Professional overlay with dynamic reconnect loops—no repetitive manual clicks. |
+| **TV-Safe Favorites UI** | ⭐ | D-Pad selectable favorite toggling with dedicated dynamic filtering. |
+| **Double-Back Exit Guard** | 🛡️ | Double-tap back protection on the home screen to prevent accidental exits. |
 
 ---
 
-## 🛠️ Built With
-
-* **Framework:** [Flutter](https://flutter.dev/)
-* **Language:** Dart
-* **Target OS:** Android TV / Leanback (Android 5.0+)
+## 🛠️ Architecture & Core Components
